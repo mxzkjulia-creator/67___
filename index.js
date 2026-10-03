@@ -3,354 +3,729 @@ require("dotenv").config();
 const {
   Client,
   GatewayIntentBits,
+  PermissionFlagsBits,
+  ChannelType,
+  SlashCommandBuilder,
   REST,
   Routes,
-  SlashCommandBuilder,
   EmbedBuilder,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  PermissionFlagsBits
+  StringSelectMenuBuilder,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle
 } = require("discord.js");
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers]
+  intents: [GatewayIntentBits.Guilds]
 });
-
-const matches = new Map();
-const INACTIVITY_MS = 3 * 60 * 1000;
 
 const commands = [
   new SlashCommandBuilder()
-    .setName("painel")
-    .setDescription("Cria uma fila de aposta.")
-    .addStringOption(o => o.setName("valor").setDescription("Valor por jogador").setRequired(true))
-    .addStringOption(o => o.setName("modo").setDescription("Modo da partida").setRequired(true)
-      .addChoices(
-        { name: "1v1", value: "1v1" },
-        { name: "2v2", value: "2v2" },
-        { name: "3v3", value: "3v3" }
-      ))
-    .addStringOption(o => o.setName("plataforma").setDescription("Plataforma").setRequired(true)
-      .addChoices(
-        { name: "PC", value: "PC" },
-        { name: "Mobile", value: "Mobile" },
-        { name: "Misto", value: "Misto" }
-      ))
-    .addStringOption(o => o.setName("mensagem").setDescription("Mensagem do painel").setRequired(true)),
+    .setName("ban")
+    .setDescription("Banir um membro")
+    .addUserOption(o =>
+      o.setName("membro")
+        .setDescription("Membro")
+        .setRequired(true)
+    )
+    .addStringOption(o =>
+      o.setName("motivo")
+        .setDescription("Motivo")
+        .setRequired(false)
+    ),
 
   new SlashCommandBuilder()
-    .setName("cancelar")
-    .setDescription("Cancela a partida e fecha o canal.")
+    .setName("mute")
+    .setDescription("Silenciar um membro")
+    .addUserOption(o =>
+      o.setName("membro")
+        .setDescription("Membro")
+        .setRequired(true)
+    )
+    .addIntegerOption(o =>
+      o.setName("minutos")
+        .setDescription("Tempo em minutos")
+        .setRequired(true)
+        .setMinValue(1)
+        .setMaxValue(40320)
+    )
+    .addStringOption(o =>
+      o.setName("motivo")
+        .setDescription("Motivo")
+        .setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("expulsar")
+    .setDescription("Expulsar um membro")
+    .addUserOption(o =>
+      o.setName("membro")
+        .setDescription("Membro")
+        .setRequired(true)
+    )
+    .addStringOption(o =>
+      o.setName("motivo")
+        .setDescription("Motivo")
+        .setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("castigo")
+    .setDescription("Aplicar castigo")
+    .addUserOption(o =>
+      o.setName("membro")
+        .setDescription("Membro")
+        .setRequired(true)
+    )
+    .addIntegerOption(o =>
+      o.setName("minutos")
+        .setDescription("Tempo em minutos")
+        .setRequired(true)
+        .setMinValue(1)
+        .setMaxValue(40320)
+    )
+    .addStringOption(o =>
+      o.setName("motivo")
+        .setDescription("Motivo")
+        .setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("lock")
+    .setDescription("Bloquear o canal"),
+
+  new SlashCommandBuilder()
+    .setName("unlock")
+    .setDescription("Desbloquear o canal"),
+
+  new SlashCommandBuilder()
+    .setName("embed")
+    .setDescription("Criar um embed")
+    .addStringOption(o =>
+      o.setName("titulo")
+        .setDescription("Titulo")
+        .setRequired(true)
+    )
+    .addStringOption(o =>
+      o.setName("mensagem")
+        .setDescription("Mensagem")
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("ticket")
+    .setDescription("Criar painel de tickets")
 ];
 
-function isStaff(member) {
-  return member.permissions.has(PermissionFlagsBits.ManageChannels) ||
-         member.permissions.has(PermissionFlagsBits.Administrator);
+function staff(member) {
+  return (
+    member.permissions.has(PermissionFlagsBits.Administrator) ||
+    member.permissions.has(PermissionFlagsBits.ManageChannels)
+  );
 }
 
-function makeQueueEmbed(match) {
-  const players = match.players.length
-    ? match.players.map((id, i) => `${i + 1}. <@${id}>`).join("\n")
-    : "_Ninguém na fila ainda_";
-
-  return new EmbedBuilder()
-    .setTitle("🎯 APOSTA")
-    .setDescription(match.message)
-    .addFields(
-      { name: "🪙 Valor (por jogador)", value: `\`${match.value}\`` },
-      { name: "⚔️ Modo", value: `**${match.mode}**`, inline: true },
-      { name: "📱 Plataforma", value: `**${match.platform}**`, inline: true },
-      { name: "🎮 Jogadores na fila", value: players }
-    )
-    .setColor(0x2ecc71)
-    .setTimestamp();
-}
-
-function makeQueueButtons() {
-  return [new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId("entrar_aposta")
-      .setLabel("Entrar na aposta")
-      .setStyle(ButtonStyle.Primary),
-    new ButtonBuilder()
-      .setCustomId("sair_aposta")
-      .setLabel("Sair")
-      .setStyle(ButtonStyle.Danger)
-  )];
-}
-
-function makeMatchEmbed(match) {
-  const rules = match.rules || [
-    "Md3",
-    "Full Soco ou o Emote que preferirem",
-    "Colocar códigos no chat e pontuação",
-    `Mapa escolhido: ${match.message || "Definido pela aposta"}`
-  ];
-
-  return new EmbedBuilder()
-    .setTitle("🎮 Partida encontrada!")
+function ticketPanel() {
+  const embed = new EmbedBuilder()
+    .setTitle("🎫 Atendimento")
     .setDescription(
-      `**Mapa:** ${match.map || match.message}\n` +
-      `**Modo:** ${match.mode} • **Plataforma:** ${match.platform}\n` +
-      `**Valor (por jogador):** ${match.value}\n` +
-      `**Mediador:** <@${match.mediatorId}>`
-    )
-    .addFields(
+      "Selecione abaixo o motivo do seu atendimento.\n\n" +
+      "📮 **Denúncias**\n" +
+      "Abusos xingamentos falas inapropriadas\n\n" +
+      "❓ **Dúvidas**\n" +
+      "Tire dúvidas Sobre o jogo Do servidor etc\n\n" +
+      "🛒 **Compra**\n" +
+      "Aqui você poderá comprar W ou até mesmo Nicks coloridos após abrir o ticket a resposta será direta sobre o valor dos produtos\n\n" +
+      "🛡️ **Suporte**\n" +
+      "Caso tenha bugs no jogo ou Algo do tipo abra q iremos resolver"
+    );
+
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId("ticket_select")
+    .setPlaceholder("Selecione o motivo")
+    .addOptions(
       {
-        name: "🔵 Time 1",
-        value: match.team1.map(id => `<@${id}>`).join("\n") || "—",
-        inline: true
+        label: "Denúncias",
+        description: "Abusos, xingamentos e falas inapropriadas",
+        value: "denuncias",
+        emoji: "📮"
       },
       {
-        name: "🔴 Time 2",
-        value: match.team2.map(id => `<@${id}>`).join("\n") || "—",
-        inline: true
+        label: "Dúvidas",
+        description: "Duvidas sobre o jogo ou servidor",
+        value: "duvidas",
+        emoji: "❓"
       },
       {
-        name: "📜 Regras",
-        value: rules.map(r => `• ${r}`).join("\n")
+        label: "Compra",
+        description: "Compras e nicks coloridos",
+        value: "compra",
+        emoji: "🛒"
+      },
+      {
+        label: "Suporte",
+        description: "Bugs e problemas",
+        value: "suporte",
+        emoji: "🛡️"
       }
+    );
+
+  return {
+    embeds: [embed],
+    components: [
+      new ActionRowBuilder().addComponents(menu)
+    ]
+  };
+}
+
+function ticketButtons() {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("ticket_close")
+        .setLabel("Fechar")
+        .setEmoji("🔒")
+        .setStyle(ButtonStyle.Danger),
+
+      new ButtonBuilder()
+        .setCustomId("staff_panel")
+        .setLabel("Painel Staff")
+        .setEmoji("🛡️")
+        .setStyle(ButtonStyle.Primary),
+
+      new ButtonBuilder()
+        .setCustomId("member_panel")
+        .setLabel("Painel Membro")
+        .setEmoji("👤")
+        .setStyle(ButtonStyle.Secondary)
     )
-    .setColor(0x2b2d31)
-    .setTimestamp();
+  ];
 }
 
-function makeStaffButtons() {
-  return [new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId("winner_t1")
-      .setLabel("Venceu: Time 1")
-      .setStyle(ButtonStyle.Success),
-    new ButtonBuilder()
-      .setCustomId("winner_t2")
-      .setLabel("Venceu: Time 2")
-      .setStyle(ButtonStyle.Success)
-  )];
+function staffButtons() {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("add_member")
+        .setLabel("Adicionar membro")
+        .setEmoji("➕")
+        .setStyle(ButtonStyle.Success),
+
+      new ButtonBuilder()
+        .setCustomId("remove_member")
+        .setLabel("Retirar membro")
+        .setEmoji("➖")
+        .setStyle(ButtonStyle.Danger),
+
+      new ButtonBuilder()
+        .setCustomId("notify_member")
+        .setLabel("Notificar membro")
+        .setEmoji("🔔")
+        .setStyle(ButtonStyle.Primary)
+    )
+  ];
 }
 
-async function closeChannel(channel, reason) {
-  await channel.send(`🔒 **Canal encerrado.**\n${reason}`).catch(() => {});
-  setTimeout(() => channel.delete("Partida encerrada").catch(() => {}), 1200);
-}
-
-function startWatcher(match) {
-  match.lastActivity = Date.now();
-
-  match.timer = setInterval(async () => {
-    if (match.closed) {
-      clearInterval(match.timer);
-      return;
-    }
-
-    if (Date.now() - match.lastActivity >= INACTIVITY_MS) {
-      const channel = await client.channels.fetch(match.channelId).catch(() => null);
-      if (!channel) return;
-
-      await channel.send(
-        "⚠️ **3 minutos sem atividade.** Se algum jogador estiver off ou não responder, a staff pode usar `/cancelar` para encerrar a partida."
-      ).catch(() => {});
-
-      // Não fecha sozinho: a staff decide.
-      match.lastActivity = Date.now();
-    }
-  }, 15000);
+function memberButtons() {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("notify_staff")
+        .setLabel("Notificar staff")
+        .setEmoji("🔔")
+        .setStyle(ButtonStyle.Primary)
+    )
+  ];
 }
 
 client.once("ready", async () => {
-  console.log(`✅ ${client.user.tag} online!`);
-
-  const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
-  const body = commands.map(c => c.toJSON());
+  console.log("BOT ONLINE: " + client.user.tag);
 
   try {
-    if (process.env.GUILD_ID) {
-      await rest.put(
-        Routes.applicationGuildCommands(client.user.id, process.env.GUILD_ID),
-        { body }
-      );
-    } else {
-      await rest.put(
-        Routes.applicationCommands(client.user.id),
-        { body }
-      );
-    }
-    console.log("✅ Comandos registrados.");
+    const rest = new REST({ version: "10" })
+      .setToken(process.env.DISCORD_TOKEN);
+
+    await rest.put(
+      Routes.applicationGuildCommands(
+        client.user.id,
+        process.env.GUILD_ID
+      ),
+      {
+        body: commands.map(c => c.toJSON())
+      }
+    );
+
+    console.log("COMANDOS REGISTRADOS");
   } catch (error) {
-    console.error("❌ Erro ao registrar comandos:", error);
+    console.error("ERRO NOS COMANDOS:", error);
   }
 });
 
 client.on("interactionCreate", async interaction => {
   try {
+
     if (interaction.isChatInputCommand()) {
-      if (interaction.commandName === "painel") {
-        const value = interaction.options.getString("valor");
-        const mode = interaction.options.getString("modo");
-        const platform = interaction.options.getString("plataforma");
-        const message = interaction.options.getString("mensagem");
 
-        const maxPlayers = Number(mode[0]) * 2;
-
-        const match = {
-          guildId: interaction.guildId,
-          channelId: interaction.channelId,
-          value,
-          mode,
-          platform,
-          message,
-          maxPlayers,
-          players: [],
-          team1: [],
-          team2: [],
-          mediatorId: interaction.user.id,
-          closed: false
-        };
-
-        const msg = await interaction.channel.send({
-          embeds: [makeQueueEmbed(match)],
-          components: makeQueueButtons()
-        });
-
-        match.messageId = msg.id;
-        matches.set(msg.id, match);
-        startWatcher(match);
-
-        return interaction.reply({
-          content: "✅ Painel de aposta criado.",
-          ephemeral: true
-        });
-      }
-
-      if (interaction.commandName === "cancelar") {
-        if (!isStaff(interaction.member)) {
+      if (interaction.commandName === "ban") {
+        if (!staff(interaction.member)) {
           return interaction.reply({
-            content: "❌ Apenas staffs podem usar este comando.",
+            content: "❌ Apenas staff pode usar este comando.",
             ephemeral: true
           });
         }
 
-        const match = [...matches.values()].find(
-          m => m.channelId === interaction.channelId && !m.closed
+        const member = interaction.options.getMember("membro");
+        const reason =
+          interaction.options.getString("motivo") ||
+          "Sem motivo informado.";
+
+        if (!member || !member.bannable) {
+          return interaction.reply({
+            content: "❌ Não posso banir esse membro.",
+            ephemeral: true
+          });
+        }
+
+        await member.ban({ reason });
+
+        return interaction.reply(
+          "🔨 " + member.user.tag + " foi banido.\nMotivo: " + reason
+        );
+      }
+
+      if (interaction.commandName === "mute") {
+        if (!staff(interaction.member)) {
+          return interaction.reply({
+            content: "❌ Apenas staff pode usar este comando.",
+            ephemeral: true
+          });
+        }
+
+        const member = interaction.options.getMember("membro");
+        const minutes = interaction.options.getInteger("minutos");
+        const reason =
+          interaction.options.getString("motivo") ||
+          "Sem motivo informado.";
+
+        if (!member || !member.moderatable) {
+          return interaction.reply({
+            content: "❌ Não posso silenciar esse membro.",
+            ephemeral: true
+          });
+        }
+
+        await member.timeout(minutes * 60000, reason);
+
+        return interaction.reply(
+          "🔇 " + member.user.tag +
+          " foi silenciado por " + minutes +
+          " minutos.\nMotivo: " + reason
+        );
+      }
+
+      if (interaction.commandName === "expulsar") {
+        if (!staff(interaction.member)) {
+          return interaction.reply({
+            content: "❌ Apenas staff pode usar este comando.",
+            ephemeral: true
+          });
+        }
+
+        const member = interaction.options.getMember("membro");
+        const reason =
+          interaction.options.getString("motivo") ||
+          "Sem motivo informado.";
+
+        if (!member || !member.kickable) {
+          return interaction.reply({
+            content: "❌ Não posso expulsar esse membro.",
+            ephemeral: true
+          });
+        }
+
+        await member.kick(reason);
+
+        return interaction.reply(
+          "👢 " + member.user.tag + " foi expulso.\nMotivo: " + reason
+        );
+      }
+
+      if (interaction.commandName === "castigo") {
+        if (!staff(interaction.member)) {
+          return interaction.reply({
+            content: "❌ Apenas staff pode usar este comando.",
+            ephemeral: true
+          });
+        }
+
+        const member = interaction.options.getMember("membro");
+        const minutes = interaction.options.getInteger("minutos");
+        const reason =
+          interaction.options.getString("motivo") ||
+          "Sem motivo informado.";
+
+        if (!member || !member.moderatable) {
+          return interaction.reply({
+            content: "❌ Não posso aplicar castigo nesse membro.",
+            ephemeral: true
+          });
+        }
+
+        await member.timeout(
+          minutes * 60000,
+          "Castigo: " + reason
         );
 
-        if (!match) {
+        return interaction.reply(
+          "⛔ " + member.user.tag +
+          " recebeu castigo por " + minutes +
+          " minutos.\nMotivo: " + reason
+        );
+      }
+
+      if (interaction.commandName === "lock") {
+        if (!staff(interaction.member)) {
           return interaction.reply({
-            content: "❌ Não há uma partida ativa neste canal.",
+            content: "❌ Apenas staff pode usar este comando.",
             ephemeral: true
           });
         }
 
-        match.closed = true;
-        if (match.timer) clearInterval(match.timer);
+        await interaction.channel.permissionOverwrites.edit(
+          interaction.guild.roles.everyone,
+          { SendMessages: false }
+        );
 
-        await interaction.reply({
-          content: "🔒 Partida cancelada. Fechando o canal...",
-          ephemeral: true
+        return interaction.reply("🔒 Canal bloqueado.");
+      }
+
+      if (interaction.commandName === "unlock") {
+        if (!staff(interaction.member)) {
+          return interaction.reply({
+            content: "❌ Apenas staff pode usar este comando.",
+            ephemeral: true
+          });
+        }
+
+        await interaction.channel.permissionOverwrites.edit(
+          interaction.guild.roles.everyone,
+          { SendMessages: null }
+        );
+
+        return interaction.reply("🔓 Canal desbloqueado.");
+      }
+
+      if (interaction.commandName === "embed") {
+        if (!staff(interaction.member)) {
+          return interaction.reply({
+            content: "❌ Apenas staff pode usar este comando.",
+            ephemeral: true
+          });
+        }
+
+        const title = interaction.options.getString("titulo");
+        const message = interaction.options.getString("mensagem");
+
+        const embed = new EmbedBuilder()
+          .setTitle(title)
+          .setDescription(message)
+          .setTimestamp();
+
+        await interaction.channel.send({
+          embeds: [embed]
         });
 
-        await closeChannel(interaction.channel, "A staff cancelou a partida.");
+        return interaction.reply({
+          content: "✅ Embed enviado.",
+          ephemeral: true
+        });
       }
+
+      if (interaction.commandName === "ticket") {
+        if (!staff(interaction.member)) {
+          return interaction.reply({
+            content: "❌ Apenas staff pode usar este comando.",
+            ephemeral: true
+          });
+        }
+
+        await interaction.channel.send(ticketPanel());
+
+        return interaction.reply({
+          content: "✅ Painel de tickets criado.",
+          ephemeral: true
+        });
+      }
+    }
+
+    if (
+      interaction.isStringSelectMenu() &&
+      interaction.customId === "ticket_select"
+    ) {
+
+      const existing = interaction.guild.channels.cache.find(
+        channel =>
+          channel.type === ChannelType.GuildText &&
+          channel.topic === "ticket-" + interaction.user.id
+      );
+
+      if (existing) {
+        return interaction.reply({
+          content: "❌ Você já possui um ticket aberto: " + existing,
+          ephemeral: true
+        });
+      }
+
+      const reason = interaction.values[0];
+
+      const channel = await interaction.guild.channels.create({
+        name: "ticket-" + interaction.user.username
+          .toLowerCase()
+          .replace(/[^a-z0-9]/g, "")
+          .slice(0, 20),
+        type: ChannelType.GuildText,
+        topic: "ticket-" + interaction.user.id,
+        permissionOverwrites: [
+          {
+            id: interaction.guild.roles.everyone.id,
+            deny: [PermissionFlagsBits.ViewChannel]
+          },
+          {
+            id: interaction.user.id,
+            allow: [
+              PermissionFlagsBits.ViewChannel,
+              PermissionFlagsBits.SendMessages,
+              PermissionFlagsBits.ReadMessageHistory
+            ]
+          }
+        ]
+      });
+
+      for (const role of interaction.guild.roles.cache.values()) {
+        if (
+          role.permissions.has(PermissionFlagsBits.Administrator) ||
+          role.permissions.has(PermissionFlagsBits.ManageChannels)
+        ) {
+          await channel.permissionOverwrites.edit(role.id, {
+            ViewChannel: true,
+            SendMessages: true,
+            ReadMessageHistory: true
+          });
+        }
+      }
+
+      const names = {
+        denuncias: "Denúncias",
+        duvidas: "Dúvidas",
+        compra: "Compra",
+        suporte: "Suporte"
+      };
+
+      const embed = new EmbedBuilder()
+        .setTitle("🎫 Ticket")
+        .setDescription(
+          "Olá " + interaction.user + "!\n\n" +
+          "Seu ticket foi criado.\n\n" +
+          "**Motivo:** " + names[reason] +
+          "\n\nAguarde a staff atender você."
+        );
+
+      await channel.send({
+        content: interaction.user.toString(),
+        embeds: [embed],
+        components: ticketButtons()
+      });
+
+      return interaction.reply({
+        content: "✅ Ticket criado: " + channel,
+        ephemeral: true
+      });
     }
 
     if (interaction.isButton()) {
-      const match = [...matches.values()].find(
-        m => m.channelId === interaction.channelId && !m.closed
-      );
 
-      if (!match) {
+      if (interaction.customId === "ticket_close") {
+        if (!staff(interaction.member)) {
+          return interaction.reply({
+            content: "❌ Apenas staff tem permissão para fechar este ticket.",
+            ephemeral: true
+          });
+        }
+
+        await interaction.reply("🔒 Ticket será fechado em 3 segundos.");
+
+        setTimeout(() => {
+          interaction.channel.delete().catch(() => {});
+        }, 3000);
+
+        return;
+      }
+
+      if (interaction.customId === "staff_panel") {
+        if (!staff(interaction.member)) {
+          return interaction.reply({
+            content: "❌ Apenas staff pode abrir este painel.",
+            ephemeral: true
+          });
+        }
+
         return interaction.reply({
-          content: "❌ Esta partida não está mais ativa.",
+          content: "🛡️ Painel Staff",
+          components: staffButtons(),
           ephemeral: true
         });
       }
 
-      match.lastActivity = Date.now();
-
-      if (interaction.customId === "entrar_aposta") {
-        if (match.players.includes(interaction.user.id)) {
-          return interaction.reply({
-            content: "Você já está na fila.",
-            ephemeral: true
-          });
-        }
-
-        if (match.players.length >= match.maxPlayers) {
-          return interaction.reply({
-            content: "❌ A fila já está cheia.",
-            ephemeral: true
-          });
-        }
-
-        match.players.push(interaction.user.id);
-
-        if (match.players.length === match.maxPlayers) {
-          const half = match.maxPlayers / 2;
-          match.team1 = match.players.slice(0, half);
-          match.team2 = match.players.slice(half);
-
-          // O painel da fila é substituído pelo painel final.
-          await interaction.update({
-            embeds: [makeMatchEmbed(match)],
-            components: makeStaffButtons()
-          });
-
-          await interaction.channel.send(
-            "🎮 **Partida pronta!** Joguem e enviem o print do resultado aqui. **Apenas a staff pode votar no vencedor.**"
-          );
-
-          return;
-        }
-
-        return interaction.update({
-          embeds: [makeQueueEmbed(match)],
-          components: makeQueueButtons()
+      if (interaction.customId === "member_panel") {
+        return interaction.reply({
+          content: "👤 Painel Membro",
+          components: memberButtons(),
+          ephemeral: true
         });
       }
 
-      if (interaction.customId === "sair_aposta") {
-        const index = match.players.indexOf(interaction.user.id);
-
-        if (index === -1) {
-          return interaction.reply({
-            content: "Você não está na fila.",
-            ephemeral: true
-          });
-        }
-
-        match.players.splice(index, 1);
-
-        return interaction.update({
-          embeds: [makeQueueEmbed(match)],
-          components: makeQueueButtons()
-        });
-      }
-
-      if (interaction.customId === "winner_t1" || interaction.customId === "winner_t2") {
-        if (!isStaff(interaction.member)) {
-          return interaction.reply({
-            content: "❌ Apenas staff pode votar.",
-            ephemeral: true
-          });
-        }
-
-        const winner = interaction.customId === "winner_t1" ? "Time 1" : "Time 2";
-
+      if (interaction.customId === "notify_staff") {
         await interaction.reply({
-          content: `🏆 **${winner} venceu!** Resultado confirmado pela staff.`,
-          ephemeral: false
+          content: "🔔 A staff foi notificada.",
+          ephemeral: true
         });
 
-        // Mantém o painel visível para consulta.
+        await interaction.channel.send(
+          "🔔 **STAFF:** " +
+          interaction.user +
+          " está solicitando atendimento!"
+        );
+
         return;
       }
+
+      if (interaction.customId === "notify_member") {
+        if (!staff(interaction.member)) {
+          return interaction.reply({
+            content: "❌ Apenas staff.",
+            ephemeral: true
+          });
+        }
+
+        const memberId =
+          interaction.channel.topic?.replace("ticket-", "");
+
+        if (memberId) {
+          return interaction.reply(
+            "🔔 <@" + memberId + "> a staff está chamando você!"
+          );
+        }
+
+        return interaction.reply("🔔 Membro notificado.");
+      }
+
+      if (
+        interaction.customId === "add_member" ||
+        interaction.customId === "remove_member"
+      ) {
+
+        if (!staff(interaction.member)) {
+          return interaction.reply({
+            content: "❌ Apenas staff.",
+            ephemeral: true
+          });
+        }
+
+        const modal = new ModalBuilder()
+          .setCustomId(
+            interaction.customId === "add_member"
+              ? "modal_add"
+              : "modal_remove"
+          )
+          .setTitle(
+            interaction.customId === "add_member"
+              ? "Adicionar membro"
+              : "Retirar membro"
+          );
+
+        const input = new TextInputBuilder()
+          .setCustomId("user_id")
+          .setLabel("ID do usuário")
+          .setPlaceholder("Cole o ID do Discord")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true);
+
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(input)
+        );
+
+        return interaction.showModal(modal);
+      }
     }
+
+    if (interaction.isModalSubmit()) {
+
+      const userId =
+        interaction.fields.getTextInputValue("user_id").trim();
+
+      if (!staff(interaction.member)) {
+        return interaction.reply({
+          content: "❌ Apenas staff.",
+          ephemeral: true
+        });
+      }
+
+      if (interaction.customId === "modal_add") {
+        try {
+          const member =
+            await interaction.guild.members.fetch(userId);
+
+          await interaction.channel.permissionOverwrites.edit(
+            member.id,
+            {
+              ViewChannel: true,
+              SendMessages: true,
+              ReadMessageHistory: true
+            }
+          );
+
+          return interaction.reply({
+            content: "✅ Membro adicionado ao ticket.",
+            ephemeral: true
+          });
+        } catch {
+          return interaction.reply({
+            content: "❌ ID de usuário inválido ou membro não encontrado.",
+            ephemeral: true
+          });
+        }
+      }
+
+      if (interaction.customId === "modal_remove") {
+        try {
+          const member =
+            await interaction.guild.members.fetch(userId);
+
+          await interaction.channel.permissionOverwrites.delete(
+            member.id
+          );
+
+          return interaction.reply({
+            content: "✅ Membro retirado do ticket.",
+            ephemeral: true
+          });
+        } catch {
+          return interaction.reply({
+            content: "❌ ID de usuário inválido ou membro não encontrado.",
+            ephemeral: true
+          });
+        }
+      }
+    }
+
   } catch (error) {
-    console.error("❌ Erro:", error);
+    console.error("ERRO:", error);
 
     if (!interaction.replied && !interaction.deferred) {
       await interaction.reply({
-        content: "❌ Ocorreu um erro ao processar essa ação.",
+        content: "❌ Ocorreu um erro.",
         ephemeral: true
       }).catch(() => {});
     }

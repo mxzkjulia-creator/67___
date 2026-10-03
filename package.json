@@ -1,0 +1,13 @@
+{
+  "name": "aposta-discord-bot-v3",
+  "version": "3.0.0",
+  "description": "Bot de partidas com painel final exclusivo para staff.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.24.2",
+    "dotenv": "^17.2.2"
+  }
+}
